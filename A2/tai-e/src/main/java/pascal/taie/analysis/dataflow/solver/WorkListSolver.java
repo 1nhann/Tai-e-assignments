@@ -45,10 +45,8 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
         cfg.forEach(worklist::add);
         worklist.remove(cfg.getEntry());
 
-        worklist.remove(cfg.getEntry());
-
         while (!worklist.isEmpty()){
-
+            //弹出
             Node stmt = worklist.poll();
 
             Fact in = result.getInFact(stmt);

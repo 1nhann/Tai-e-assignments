@@ -129,10 +129,6 @@ public class ConstantPropagation extends
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-//        return false;
-//        in.forEach((var, value) -> {
-//            out.update(var,value);
-//        });
         in.forEach(out::update);
 
         if (stmt instanceof DefinitionStmt){
