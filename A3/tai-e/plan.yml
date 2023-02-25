@@ -17,8 +17,8 @@
 - id: process-result
   options:
     analyses:
-    - livevar
-    - constprop
+#    - livevar
+#    - constprop
     - deadcode
     action: dump
     file: null

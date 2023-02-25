@@ -33,21 +33,13 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -71,8 +63,116 @@ public class DeadCodeDetection extends MethodAnalysis {
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
         // Your task is to recognize dead code in ir and add it to deadCode
+
+        cfg.forEach(deadCode::add);
+        deadCode.remove(cfg.getExit());
+        deadCode.remove(cfg.getEntry());
+
+        Set<Stmt> reachableCode = getReachableCode(cfg,constants);
+
+        deadCode.removeAll(reachableCode);
+
+        Set<Stmt> deadAssignStmt = getDeadAssignStmt(cfg,liveVars);
+
+        deadCode.addAll(deadAssignStmt);
+
         return deadCode;
     }
+
+    private Set<Stmt> getReachableCode(CFG<Stmt> cfg , DataflowResult<Stmt, CPFact> constants){
+        Set<Stmt> reachableCode = new HashSet<>();
+
+        Queue<Stmt> queue = new LinkedList<>();
+        queue.add(cfg.getEntry());
+
+        //bfs
+        while (!queue.isEmpty()){
+            Stmt stmt = queue.poll();
+
+            if (reachableCode.contains(stmt)){
+                continue;
+            }else {
+                reachableCode.add(stmt);
+            }
+
+            Set<Stmt> succs = cfg.getSuccsOf(stmt);
+            if (succs.size() == 1){
+                queue.addAll(succs);
+            }else if(succs.size() > 1){
+                if (stmt instanceof If){
+                    Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(stmt);
+                    ConditionExp conditionExp = ((If) stmt).getCondition();
+
+                    Value conditionValue = ConstantPropagation.evaluate(conditionExp,constants.getInFact(stmt));
+
+                    if (conditionValue.isConstant()){
+                        boolean conditionValueBool = conditionValue.getConstant() == 1;
+                        outEdges.forEach(stmtEdge -> {
+                            if (stmtEdge.getKind().equals(Edge.Kind.IF_TRUE) && conditionValueBool){
+                                queue.add(stmtEdge.getTarget());
+                            }else if (stmtEdge.getKind().equals(Edge.Kind.IF_FALSE) && !conditionValueBool){
+                                queue.add(stmtEdge.getTarget());
+                            }
+                        });
+                    }else {
+                        queue.addAll(succs);
+                    }
+                }
+
+                if (stmt instanceof SwitchStmt){
+                    Set<Edge<Stmt>> outEdges = cfg.getOutEdgesOf(stmt);
+
+                    Var conditionVar = ((SwitchStmt) stmt).getVar();
+
+                    Value conditionValue = constants.getInFact(stmt).get(conditionVar);
+
+                    if (conditionValue.isConstant()){
+                        int value = conditionValue.getConstant();
+                        boolean useDefault = true;
+                        Stmt defaultTarget = null;
+                        for (Edge<Stmt> edge:outEdges){
+                            if (edge.getKind().equals(Edge.Kind.SWITCH_CASE)){
+                                if (edge.getCaseValue() == value){
+                                    queue.add(edge.getTarget());
+                                    useDefault = false;
+                                    break;
+                                }
+                            }else if (edge.getKind().equals(Edge.Kind.SWITCH_DEFAULT)){
+                                defaultTarget = edge.getTarget();
+                            }
+                        }
+                        if (useDefault && defaultTarget != null){
+                            queue.add(defaultTarget);
+                        }
+                    }else {
+                        queue.addAll(succs);
+                    }
+
+                }
+
+            }
+
+        }
+        return reachableCode;
+    }
+
+    private Set<Stmt> getDeadAssignStmt(CFG<Stmt> cfg, DataflowResult<Stmt, SetFact<Var>> liveVars){
+        Set<Stmt> deadAssignStmt = new HashSet<>();
+
+        for (Stmt stmt: cfg){
+            if (stmt instanceof AssignStmt){
+                LValue lValue = ((AssignStmt) stmt).getLValue();
+                SetFact<Var> fact = liveVars.getOutFact(stmt);
+                if (lValue instanceof Var && !fact.contains((Var) lValue)){
+                    if (DeadCodeDetection.hasNoSideEffect(((AssignStmt) stmt).getRValue())){
+                        deadAssignStmt.add(stmt);
+                    }
+                }
+            }
+        }
+        return deadAssignStmt;
+    }
+
 
     /**
      * @return true if given RValue has no side effect, otherwise false.
