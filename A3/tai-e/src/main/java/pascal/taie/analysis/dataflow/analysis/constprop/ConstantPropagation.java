@@ -63,14 +63,13 @@ public class ConstantPropagation extends
 
         CPFact cpFact = new CPFact();
         List<Var> params = cfg.getIR().getParams();
-        params.forEach(new Consumer<Var>() {
-            @Override
-            public void accept(Var var) {
-                if (ConstantPropagation.canHoldInt(var)){
-                    cpFact.update(var,Value.getNAC());
-                }
+
+        params.forEach(var -> {
+            if (ConstantPropagation.canHoldInt(var)){
+                cpFact.update(var,Value.getNAC());
             }
         });
+
         return cpFact;
     }
 
@@ -84,12 +83,10 @@ public class ConstantPropagation extends
     @Override
     public void meetInto(CPFact fact, CPFact target) {
         // TODO - finish me
-        fact.forEach(new BiConsumer<Var, Value>() {
-            @Override
-            public void accept(Var var, Value value) {
-                Value v = meetValue(target.get(var),value);
-                target.update(var,v);
-            }
+
+        fact.forEach((var, value) -> {
+            Value v = meetValue(target.get(var),value);
+            target.update(var,v);
         });
     }
 
@@ -129,16 +126,15 @@ public class ConstantPropagation extends
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        in.forEach(out::update);
+        CPFact old_OUT = out.copy();
+        out.copyFrom(in);
 
         if (stmt instanceof DefinitionStmt){
             Exp lvalue = ((DefinitionStmt)stmt).getLValue();
 
             if (!(lvalue instanceof Var) || !(ConstantPropagation.canHoldInt((Var) lvalue))){
-                return false;
+                return !old_OUT.equals(out);
             }
-
-            CPFact old_OUT = out.copy();
 
             out.remove((Var) lvalue);
 
@@ -150,7 +146,6 @@ public class ConstantPropagation extends
                 gen.update((Var) lvalue,Value.makeConstant(((IntLiteral) rvalue).getValue()));
             }else if (rvalue instanceof Var){
                 gen.update((Var) lvalue,in.get((Var) rvalue));
-
             }else if (rvalue instanceof BinaryExp){
                 gen.update((Var) lvalue,ConstantPropagation.evaluate(rvalue,in));
             }else {
@@ -158,11 +153,8 @@ public class ConstantPropagation extends
             }
             gen.forEach(out::update);
 
-            return !old_OUT.equals(out);
-        }else {
-            //out not changed
-            return false;
         }
+        return !old_OUT.equals(out);
     }
 
     /**
