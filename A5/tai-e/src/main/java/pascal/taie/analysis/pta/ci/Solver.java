@@ -179,13 +179,11 @@ class Solver {
 
         if (!pointerFlowGraph.getSuccsOf(source).contains(target)){
             pointerFlowGraph.addEdge(source,target);
+            PointsToSet pts = source.getPointsToSet();
+            if (!pts.isEmpty()){
+                workList.addEntry(target,pts);
+            }
         }
-
-        PointsToSet pts = source.getPointsToSet();
-        if (!pts.isEmpty()){
-            workList.addEntry(target,pts);
-        }
-
     }
 
     /**
