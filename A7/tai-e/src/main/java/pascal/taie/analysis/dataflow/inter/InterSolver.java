@@ -22,10 +22,14 @@
 
 package pascal.taie.analysis.dataflow.inter;
 
+import pascal.taie.World;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.language.classes.JMethod;
 import pascal.taie.util.collection.SetQueue;
 
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -58,11 +62,68 @@ class InterSolver<Method, Node, Fact> {
         return result;
     }
 
+    public Queue<Node> getWorkList() {
+        return workList;
+    }
+
+    private Node getEntry(){
+
+        JMethod main = World.get().getMainMethod();
+        return icfg.getEntryOf((Method) main);
+
+//        List<Method> methods = icfg.entryMethods().toList();
+//        if (methods.size() >= 1){
+//            Method mainMethod = methods.get(0);
+//            return icfg.getEntryOf(mainMethod);
+//        }
+//        return null;
+    }
+
+    public Fact getInFact(Node node){
+        return result.getInFact(node);
+    }
+
     private void initialize() {
         // TODO - finish me
+        Node entry = getEntry();
+        if (entry != null){
+            result.setOutFact(entry,analysis.newBoundaryFact(entry));
+            for (Node node:icfg){
+                if (!node.equals(entry)){
+                    result.setOutFact(node,analysis.newInitialFact());
+                    result.setInFact(node,analysis.newInitialFact());
+                }
+            }
+        }
     }
 
     private void doSolve() {
         // TODO - finish me
+
+        workList = new LinkedList<>();
+
+        icfg.forEach(workList::add);
+        workList.remove(getEntry());
+
+        while (!workList.isEmpty()){
+            Node stmt = workList.poll();
+
+            Fact in = result.getInFact(stmt);
+
+            icfg.getInEdgesOf(stmt).forEach(edge -> {
+                Node pre = edge.getSource();
+                Fact newOut = analysis.transferEdge(edge,result.getOutFact(pre));
+                analysis.meetInto(newOut,in);
+            });
+
+
+            Fact out = result.getOutFact(stmt);
+
+            boolean out_changed = analysis.transferNode(stmt,in,out);
+
+            if (out_changed){
+                workList.addAll(icfg.getSuccsOf(stmt));
+            }
+        }
     }
 }

@@ -25,6 +25,7 @@ package pascal.taie.analysis.dataflow.inter;
 import pascal.taie.World;
 import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
+import pascal.taie.analysis.dataflow.analysis.constprop.Value;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.icfg.CallEdge;
@@ -32,13 +33,25 @@ import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
+import pascal.taie.analysis.pta.core.cs.element.CSObj;
+import pascal.taie.analysis.pta.core.cs.element.CSVar;
+import pascal.taie.analysis.pta.core.cs.element.InstanceField;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
+import pascal.taie.ir.exp.FieldAccess;
+import pascal.taie.ir.exp.InstanceFieldAccess;
 import pascal.taie.ir.exp.InvokeExp;
 import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.Stmt;
+import pascal.taie.ir.stmt.*;
+import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
+import pascal.taie.util.collection.Maps;
+import pascal.taie.util.collection.MultiMap;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Implementation of interprocedural constant propagation for int values.
@@ -50,6 +63,8 @@ public class InterConstantPropagation extends
 
     private final ConstantPropagation cp;
 
+    private MultiMap<Var,Var> alias;
+
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
         cp = new ConstantPropagation(new AnalysisConfig(ConstantPropagation.ID));
@@ -60,6 +75,27 @@ public class InterConstantPropagation extends
         String ptaId = getOptions().getString("pta");
         PointerAnalysisResult pta = World.get().getResult(ptaId);
         // You can do initialization work here
+        this.alias = initializeAlias(pta);
+    }
+
+    private MultiMap<Var, Var> initializeAlias(PointerAnalysisResult pta){
+
+        MultiMap<Obj, Var> obj2vars = Maps.newMultiMap();
+        MultiMap<Var, Var> alias = Maps.newMultiMap();
+
+        pta.getVars().forEach(var -> {
+            pta.getPointsToSet(var).forEach(obj -> {
+                obj2vars.put(obj,var);
+            });
+        });
+
+        obj2vars.forEachSet((obj, vars) -> {
+            vars.forEach(var -> {
+                alias.putAll(var,vars);
+            });
+        });
+
+        return alias;
     }
 
     @Override
@@ -86,36 +122,295 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return false;
+//        return false;
+        return out.copyFrom(in);
     }
+
+    private Set<StoreField> getStaticStoreFieldStmts(JField field){
+        return getStoreFieldStmts(null,field);
+    }
+
+    private Set<StoreField> getStoreFieldStmts(Var baseVar,JField field){
+        HashSet<StoreField> stmts = new HashSet<>();
+        if (baseVar == null){
+            icfg.forEach(stmt1 -> {
+                if (stmt1 instanceof StoreField storeField &&
+                        storeField.isStatic() &&
+                        storeField.getFieldAccess().getFieldRef().resolve().equals(field)){
+                    stmts.add(storeField);
+                }
+            });
+        }else {
+            Set<Var> aliases = alias.get(baseVar);
+            aliases.forEach(var -> {
+                List<StoreField> storeFields = var.getStoreFields();
+                storeFields.forEach(storeField -> {
+                    if (storeField.getFieldAccess().getFieldRef().resolve().equals(field)){
+                        stmts.add(storeField);
+                    }
+                });
+            });
+        }
+        return stmts;
+    }
+
+    private Set<LoadField> getStaticLoadFieldStmts(JField field){
+        return getLoadFieldStmts(null,field);
+    }
+
+    private Set<LoadField> getLoadFieldStmts(Var baseVar,JField field){
+        HashSet<LoadField> stmts = new HashSet<>();
+        if (baseVar == null){
+            icfg.forEach(stmt1 -> {
+                if (stmt1 instanceof LoadField loadField &&
+                        loadField.isStatic() &&
+                        loadField.getFieldAccess().getFieldRef().resolve().equals(field)){
+                    stmts.add(loadField);
+                }
+            });
+        }else {
+            Set<Var> aliases = alias.get(baseVar);
+            aliases.forEach(var -> {
+                List<LoadField> loadFields = var.getLoadFields();
+                loadFields.forEach(loadField -> {
+                    if (loadField.getFieldAccess().getFieldRef().resolve().equals(field)){
+                        stmts.add(loadField);
+                    }
+                });
+            });
+        }
+        return stmts;
+    }
+
+
+    private Value mergeAssignStmtValue(Set<? extends AssignStmt> stmts){
+        Value value = Value.getUndef();
+
+        for (AssignStmt stmt : stmts){
+            if (stmt.getRValue() instanceof Var x){
+                // y = x
+                Value v = solver.getInFact(stmt).get(x);
+                value = cp.meetValue(v,value);
+            }
+        }
+        return value;
+    }
+
+
+    private Set<StoreArray> getStoreArrayStmts(Var baseVar,Value iValue){
+        Set<Var> aliases = alias.get(baseVar);
+        Set<StoreArray> stmts = new HashSet<>();
+
+        aliases.forEach(var -> {
+            List<StoreArray> storeArrays = var.getStoreArrays();
+            storeArrays.forEach(storeArray -> {
+                Var j = storeArray.getArrayAccess().getIndex();
+
+                Value jValue = solver.getInFact(storeArray).get(j);
+
+                if (
+                        (iValue.isConstant() && jValue.isNAC())
+                        || (iValue.isNAC() && jValue.isConstant())
+                        || (iValue.isNAC() && jValue.isNAC())
+                        || (
+                                iValue.isConstant()
+                                        && jValue.isConstant()
+                                        && iValue.getConstant() == jValue.getConstant()
+                                )
+                ){
+                    stmts.add(storeArray);
+                }
+            });
+        });
+        return stmts;
+    }
+
+
+    private Set<LoadArray> getLoadArrayStmts(Var baseVar,Var index){
+        Set<Var> aliases = alias.get(baseVar);
+        Set<LoadArray> stmts = new HashSet<>();
+
+        aliases.forEach(var -> {
+            List<LoadArray> loadArrays = var.getLoadArrays();
+            loadArrays.forEach(loadArray -> {
+                Var i = loadArray.getArrayAccess().getIndex();
+                if (solver.getInFact(loadArray).get(i).equals(solver.getInFact(loadArray).get(index))){
+                    stmts.add(loadArray);
+                }
+            });
+        });
+        return stmts;
+    }
+
+    private boolean transferLoadField(LoadField loadField, CPFact in, CPFact out){
+        CPFact old_OUT = out.copy();
+        out.copyFrom(in);
+        JField field = loadField.getFieldAccess().getFieldRef().resolve();
+        if (loadField.isStatic()){
+            // y = T.f
+            Set<StoreField> stmts = getStaticStoreFieldStmts(field);
+            Value value = mergeAssignStmtValue(stmts);
+            Var y = loadField.getLValue();
+            value = cp.meetValue(in.get(y),value);
+            out.update(y,value);
+        }else {
+            // y = x.f
+            FieldAccess fieldAccess = loadField.getFieldAccess();
+            if (fieldAccess instanceof InstanceFieldAccess instanceFieldAccess){
+                Var baseVar = instanceFieldAccess.getBase();
+                Set<StoreField> stmts = getStoreFieldStmts(baseVar,field);
+                Value value = mergeAssignStmtValue(stmts);
+                Var y = loadField.getLValue();
+                value = cp.meetValue(in.get(y),value);
+                out.update(y,value);
+            }
+        }
+        return !old_OUT.equals(out);
+    }
+
+    private boolean transferLoadArray(LoadArray loadArray, CPFact in, CPFact out){
+        CPFact old_OUT = out.copy();
+        out.copyFrom(in);
+        // y = x[i]
+        Var x = loadArray.getArrayAccess().getBase();
+        Var i = loadArray.getArrayAccess().getIndex();
+        Value iValue = solver.getInFact(loadArray).get(i);
+        Set<StoreArray> storeArrays = getStoreArrayStmts(x,iValue);
+
+        Value value = mergeAssignStmtValue(storeArrays);
+
+        Var y = loadArray.getLValue();
+        value = cp.meetValue(in.get(y),value);
+        out.update(y,value);
+        return !old_OUT.equals(out);
+    }
+
+
+    private boolean transferStoreField(StoreField storeField, CPFact in, CPFact out){
+        CPFact old_OUT = out.copy();
+        out.copyFrom(in);
+        JField field = storeField.getFieldAccess().getFieldRef().resolve();
+        Set<LoadField> stmts = new HashSet<>();
+        if (storeField.isStatic()){
+            // y = T.f
+            stmts = getStaticLoadFieldStmts(field);
+        }else {
+            // y = x.f
+            FieldAccess fieldAccess = storeField.getFieldAccess();
+            if (fieldAccess instanceof InstanceFieldAccess instanceFieldAccess){
+                Var baseVar = instanceFieldAccess.getBase();
+                stmts = getLoadFieldStmts(baseVar,field);
+            }
+        }
+        solver.getWorkList().addAll(stmts);
+        return !old_OUT.equals(out);
+    }
+
+    private boolean transferStoreArray(StoreArray storeArray, CPFact in, CPFact out){
+        CPFact old_OUT = out.copy();
+        out.copyFrom(in);
+        // y = x[i]
+        Var x = storeArray.getArrayAccess().getBase();
+        Var i = storeArray.getArrayAccess().getIndex();
+        Set<LoadArray> stmts = getLoadArrayStmts(x,i);
+
+        solver.getWorkList().addAll(stmts);
+        return !old_OUT.equals(out);
+    }
+
 
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return false;
+//        return false;
+
+        if (stmt instanceof LoadField loadField){
+            return transferLoadField(loadField,in,out);
+        }else if (stmt instanceof LoadArray loadArray) {
+            return transferLoadArray(loadArray,in,out);
+        } else if (stmt instanceof StoreField storeField) {
+            return transferStoreField(storeField,in,out);
+        } else if (stmt instanceof StoreArray storeArray) {
+            return transferStoreArray(storeArray,in,out);
+        }
+        return this.cp.transferNode(stmt,in,out);
     }
 
     @Override
     protected CPFact transferNormalEdge(NormalEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+//        return null;
+        return out.copy();
     }
 
     @Override
     protected CPFact transferCallToReturnEdge(CallToReturnEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+//        return null;
+
+        Stmt stmt = edge.getSource();
+
+        CPFact fact = out.copy();
+
+        if (stmt instanceof Invoke callsite){
+            Var lvar = callsite.getResult();
+
+            if (lvar != null){
+                fact.remove(lvar);
+            }
+        }
+
+        return fact;
     }
 
     @Override
     protected CPFact transferCallEdge(CallEdge<Stmt> edge, CPFact callSiteOut) {
         // TODO - finish me
-        return null;
+//        return null;
+
+        Stmt source = edge.getSource();
+
+        CPFact fact = new CPFact();
+
+        if (source instanceof Invoke callsite){
+            List<Var> vars = callsite.getInvokeExp().getArgs();
+            JMethod callee = edge.getCallee();
+            List<Var> params = callee.getIR().getParams();
+
+            for (int i = 0; i < vars.size();i++){
+                fact.update(params.get(i),callSiteOut.get(vars.get(i)));
+            }
+        }
+
+        return fact;
+
     }
 
     @Override
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
-        return null;
+//        return null;
+
+        Stmt stmt = edge.getCallSite();
+
+        CPFact fact = new CPFact();
+
+        if (stmt instanceof Invoke callsite){
+            Var resultVar = callsite.getResult();
+
+            if (resultVar != null){
+
+                Value returnValue = Value.getUndef();
+
+                for (Var returnVar : edge.getReturnVars()){
+                    returnValue = this.cp.meetValue(returnValue,returnOut.get(returnVar));
+                }
+
+                fact.update(resultVar,returnValue);
+            }
+        }
+
+        return fact;
+
     }
 }

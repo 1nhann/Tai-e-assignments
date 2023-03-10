@@ -22,8 +22,10 @@
 
 package pascal.taie.analysis.dataflow.inter;
 
+import pascal.taie.World;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.language.classes.JMethod;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -73,12 +75,14 @@ class InterSolver<Method, Node, Fact> {
 
 
     private Node getEntry(){
-        List<Method> methods = icfg.entryMethods().toList();
-        if (methods.size() >= 1){
-            Method mainMethod = methods.get(0);
-            return icfg.getEntryOf(mainMethod);
-        }
-        return null;
+//        List<Method> methods = icfg.entryMethods().toList();
+//        if (methods.size() >= 1){
+//            Method mainMethod = methods.get(0);
+//            return icfg.getEntryOf(mainMethod);
+//        }
+//        return null;
+        JMethod main = World.get().getMainMethod();
+        return icfg.getEntryOf((Method) main);
     }
 
     private void doSolve() {
