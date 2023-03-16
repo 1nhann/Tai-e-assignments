@@ -292,10 +292,10 @@ public class InterConstantPropagation extends
         JField field = storeField.getFieldAccess().getFieldRef().resolve();
         Set<LoadField> stmts = new HashSet<>();
         if (storeField.isStatic()){
-            // y = T.f
+            // T.f = y
             stmts = getStaticLoadFieldStmts(field);
         }else {
-            // y = x.f
+            // x.f = y
             FieldAccess fieldAccess = storeField.getFieldAccess();
             if (fieldAccess instanceof InstanceFieldAccess instanceFieldAccess){
                 Var baseVar = instanceFieldAccess.getBase();
